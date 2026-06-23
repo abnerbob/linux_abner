@@ -1,0 +1,61 @@
+
+[GNU Jobserver](https://make.mad-scientist.net/papers/jobserver-implementation/)
+
+1. 核心骨架：基于匿名管道的“代币（Token）”机制
+Jobserver 的本质极其纯粹，它就是一个 Linux 匿名管道（Pipe）。
+
+初始的顶层 make 创建一个匿名管道，并写入 N - 1个一字节的标记(令牌 )。
+该管道在该make和所有子make之间共享。                             总数：N (顶层make占用一个)
+任何make想运行作业时，首先必须从管道读取令牌。                    pop：- 1
+作业完成后，它会将令牌写回管道。                                 push：+ 1
+因为只有N个令牌，你知道你永远不会调用超过N个任务。
+
+2. 血液输送：环境变量 + 句柄继承
+既然是匿名管道，多层套娃的子子孙孙怎么才能拿到这个管道的控制权呢？GNU Make 采用了两步走：
+第一步：传暗号（环境变量） 主 Make 会把管道的文件描述符数字写进环境变量 MAKEFLAGS 里。比如： MAKEFLAGS="--jobserver-auth=3,4" （表示读端是 FD 3，写端是 FD 4）。
+第二步：传实体（文件描述符继承） 主 Make 在 fork + exec 启动 Shell 脚本或子 Make 时，故意不设置 FD_CLOEXEC，允许 3 和 4 号句柄大水漫灌式地遗传给下一代。
+
+3. make的父子进程间调度
+make (主 Make，PID: 12340)
+  └─make (P1 进程，PID: 12345)
+      ├─gcc (C1 编译任务，PID: 12346) ─── [继承了隐式令牌，全速跑]
+      ├─gcc (C2 编译任务，PID: 12347) ─── [P1 帮它从管道 read 到了令牌，全速跑]
+      └─gcc (C3 编译任务，PID: 12348) ─── [P1 帮它从管道 read 到了令牌，全速跑]
+子进程（gcc）死掉的一瞬间，内核会向它的亲生父亲（P1）发送一个 SIGCHLD 信号。P1 通过 wait() 或 waitpid() 系统调用为儿子收尸。收到尸体的那一刻，P1 就能百分之百确定：“我这大儿子/二儿子干完活了”，然后由 P1 转身把令牌 write() 回管道。
+
+Make1 ➔ Python ➔ Shell ➔ Make2->5个子任务
+make (主 Make，PID: 12339)
+└─make1 (第一层子 Make，PID: 12340)
+    └─Python (脚本进程，PID: 12341)
+        └─Shell (终端环境，PID: 12342)
+            └─make2 (第二层子 Make，PID: 12343)
+                ├─gcc (C1 编译任务，PID: 12344) ─── [继承了隐式令牌，全速跑]
+                ├─gcc (C2 编译任务，PID: 12345) ─── [make2 帮它从管道 read 到了令牌，全速跑]
+                ├─gcc (C3 编译任务，PID: 12346) ─── [make2 帮它从管道 read 到了令牌，全速跑]
+                ├─gcc (C4 编译任务，PID: 12347) ─── [make2 帮它从管道 read 到了令牌 nudge，全速跑]
+                └─gcc (C5 编译任务，PID: 12348) ─── [make2 帮它从管道 read 到了令牌，全速跑]
+主make创建匿名管道，写入n个令牌。
+
+递归执行阶段：
+主make为所有子make申请了j个令牌(j<=n-1)
+make1 申请0个令牌(read一个令牌)（继承主make的隐式临牌），总共1个令牌
+-->往下执行
+make2 申请4个令牌(read一个令牌)，（继承上层隐式令牌）总共5个令牌
+执行结束回收阶段:
+make2 结束生命周期，释放申请的4个令牌
+
+-->往回递归
+make1 结束生命周期，释放申请的0个令牌
+主make释放申请的j个令牌
+
+
+每一层make根据子任务申请需要的令牌，结束时候释放申请的令牌，会有一个隐式令牌随递归链路传递和回收。
+
+GNU Make 4.4+ 的 FIFO 机制
+“高位句柄在 Python/CMake/Node.js 等高级语言中极易被安全闭锁掐断”的痛点太过于普遍
+于是在 GNU Make 4.4（2022年底发布，目前在较新的 Linux 发行版中已成为主流）中，官方终于推出了终极救星：基于命名管道（FIFO）的 Jobserver！
+```
+MAKEFLAGS="--jobserver-auth=fifo:/tmp/GMfifo12345"
+```
+新版不再依赖操作系统的“文件描述符遗传”。它把令牌池做成了一个有路径的实体命名管道文件。
+哪怕中间经过了再多层 Python 的 subprocess 闭锁摧残，高位 FD 全死光了也无所谓！因为底层的子 Make 只需要顺着 fifo:/tmp/GMfifo12345 这个文件路径，自己重新执行一次 open()，就能直接连回最外层的存钱罐！
