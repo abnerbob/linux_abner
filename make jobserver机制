@@ -51,7 +51,7 @@ make1 结束生命周期，释放申请的0个令牌
 
 每一层make根据子任务申请需要的令牌，结束时候释放申请的令牌，会有一个隐式令牌随递归链路传递和回收。
 
-GNU Make 4.4+ 的 FIFO 机制
+4. GNU Make 4.4+ 的 FIFO 机制
 “高位句柄在 Python/CMake/Node.js 等高级语言中极易被安全闭锁掐断”的痛点太过于普遍
 于是在 GNU Make 4.4（2022年底发布，目前在较新的 Linux 发行版中已成为主流）中，官方终于推出了终极救星：基于命名管道（FIFO）的 Jobserver！
 ```
@@ -59,3 +59,14 @@ MAKEFLAGS="--jobserver-auth=fifo:/tmp/GMfifo12345"
 ```
 新版不再依赖操作系统的“文件描述符遗传”。它把令牌池做成了一个有路径的实体命名管道文件。
 哪怕中间经过了再多层 Python 的 subprocess 闭锁摧残，高位 FD 全死光了也无所谓！因为底层的子 Make 只需要顺着 fifo:/tmp/GMfifo12345 这个文件路径，自己重新执行一次 open()，就能直接连回最外层的存钱罐！
+
+5.makefile和cmake句柄传递
+makefile:
+使用$(MAKE)变量
+使用+执行shell命令或者脚本文件
+使用 .ONESHELL 与环境导出
+
+cmake: cmake直接翻译成makefile
+使用$(MAKE)变量
+使用+ (使用+比传变量更好，$(MAKE)变量作为脚本参数可能改变行为)
+CMake (3.28+) add_custom_command 或 add_custom_target设置JOB_SERVER_AWARE TRUE(本质是加上+)
