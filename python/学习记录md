@@ -1,3 +1,7 @@
+参考
+https://liaoxuefeng.com/books/python/introduction/index.html
+gemini解读
+
 python是解释型脚本语言
 源码 -》 字节码 -》 虚拟机解释 -》 物理CPU执行
 语法糖是指在不影响语言功能的前提下，添加的一套“更好看、更简洁”的写法
